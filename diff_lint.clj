@@ -132,7 +132,7 @@
          (run! (partial git-exec ~proj) @inverse-ops#)))))
 
 (defn display-lint [{:keys [a b hunk-headers] :as diff} a-lint b-lint]
-  (println (format "\n- %s (%s)\n" b a))
+  (println (format "\n- %s %s\n" b (if (and a (not= a b)) (format "(%s)" a) "")))
   (when (seq b-lint)
     (let [b-lines (sort (keys b-lint))
           b-line->a-line-data (if (seq a-lint)
@@ -145,7 +145,7 @@
               b-line-data (get b-lint b-line)]
           (doseq [{:keys [message id]} b-line-data]
             (when-not (a-line-ids id)
-              (println message))))))))
+              (println " " message))))))))
 
 (defn main [proj]
   (let [diffs (diff-data proj)]
