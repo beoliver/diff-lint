@@ -1,0 +1,5 @@
+{:remove-multiple-non-indenting-spaces? true
+ :remove-surrounding-whitespace? true
+ :remove-trailing-whitespace? true
+ :remove-consecutive-blank-lines? true
+ :indents {diff-lint/run-with-clean-repo [[:block 1]]}}

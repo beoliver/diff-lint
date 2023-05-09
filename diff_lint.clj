@@ -54,15 +54,15 @@
                 (+ b-start (- b-lines 1)))
         b-next (+ b-end 1)
         a-next (+ a-end 1)]
-    {:op      op
+    {:op op
      :a-start a-start
      :b-start b-start
-     :a-end   a-end
-     :b-end   b-end
-     :b-next  b-next
-     :a-next  a-next
+     :a-end a-end
+     :b-end b-end
+     :b-next b-next
+     :a-next a-next
      :post-offset (- a-next b-next)
-     :pairs   pairs
+     :pairs pairs
      :lookup lookup}))
 
 ;; Given a series of c(hunk) headers for example
@@ -86,14 +86,14 @@
          mappings (transient {})
          [b & rest-b-lines :as b-lines] b-lines
          [h & rest-hunks :as hunks] hunks]
-    (cond (nil? b)  (persistent! mappings)
-          (nil? h)  (into (persistent! mappings) (map (fn [n] [n (+ n offset)]) b-lines))
+    (cond (nil? b) (persistent! mappings)
+          (nil? h) (into (persistent! mappings) (map (fn [n] [n (+ n offset)]) b-lines))
           ;; delay the parsing of hunk header until we need it. Store the reslt at the head of the seq
           :else (let [{:keys [b-start b-end lookup post-offset] :as h} (if (map? h) h (parse-hunk-header h))]
                   (cond
-                    (> b b-end)   (recur post-offset mappings b-lines rest-hunks)
+                    (> b b-end) (recur post-offset mappings b-lines rest-hunks)
                     (< b b-start) (recur offset (assoc! mappings b (+ offset b)) rest-b-lines (cons h hunks))
-                    :else         (recur offset (assoc! mappings b (lookup b)) rest-b-lines (cons h hunks)))))))
+                    :else (recur offset (assoc! mappings b (lookup b)) rest-b-lines (cons h hunks)))))))
 
 (defn parse-diff [proj lines]
   (let [[old new & hunks] (->> lines (drop-while #(not (str/starts-with? % "---"))))
@@ -110,19 +110,13 @@
        (partition-all 2)
        (map (comp (partial parse-diff proj) second))))
 
-(defn diffs-with-linting [diff-data]
-  ;; need to ensure we realize this as it occurs within a lazy seq
-  ;; otherwise the clj-kondo-lint-fn calls will be run after the repo has been cleaned
-  (->> diff-data
-       (keep (fn [{:keys [root b] :as diff-data}]
-               (when b
-                 (let [findings (clj-kondo-lint-fn root b)]
-                   (when (seq findings)
-                     (assoc diff-data :b-lint findings))))))
-       (doall)))
+(defn lint-for [{:keys [root] :as diff-data} k]
+  (when-some [path (k diff-data)]
+    (let [findings (clj-kondo-lint-fn root path)]
+      (when (seq findings)
+        findings))))
 
 (defmacro run-with-clean-repo
-  ^{:style/indent 1}
   [proj & body]
   `(let [inverse-ops# (atom nil)]
      (try
@@ -137,7 +131,7 @@
        (finally
          (run! (partial git-exec ~proj) @inverse-ops#)))))
 
-(defn display-lint [{:keys [a a-lint b b-lint hunk-headers] :as diff-lint-data}]
+(defn display-lint [{:keys [a b hunk-headers] :as diff} a-lint b-lint]
   (println (format "\n- %s (%s)\n" b a))
   (when (seq b-lint)
     (let [b-lines (sort (keys b-lint))
@@ -147,22 +141,20 @@
                                 (constantly nil))]
       (doseq [b-line b-lines]
         (let [a-line-data (b-line->a-line-data b-line)
-              a-line-ids  (set (map :id a-line-data))
+              a-line-ids (set (map :id a-line-data))
               b-line-data (get b-lint b-line)]
           (doseq [{:keys [message id]} b-line-data]
             (when-not (a-line-ids id)
               (println message))))))))
 
 (defn main [proj]
-  (let [diffs (->> (diff-data proj)
-                   (diffs-with-linting))]
+  (let [diffs (diff-data proj)]
     (when (seq diffs)
-      (run-with-clean-repo proj
-                           (doseq [{:keys [a] :as partial-diff-lint-data} diffs]
-                             (let [a-lint (when a (clj-kondo-lint-fn proj a))
-                                   diff-lint-data (cond-> partial-diff-lint-data
-                                                    a-lint (assoc :a-lint a-lint))]
-                               (display-lint diff-lint-data))))
+      (let [b-lints (mapv (partial lint-for :b) diffs)]
+        (run-with-clean-repo proj
+          (let [a-lints (mapv (partial lint-for :a) diffs)]
+            (doseq [[diff a-lint b-lint] (map vector diffs a-lints b-lints)]
+              (display-lint diff a-lint b-lint)))))
       (println ""))))
 
 (some-> (first *command-line-args*)
