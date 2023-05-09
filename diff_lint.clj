@@ -150,11 +150,10 @@
 (defn main [proj]
   (let [diffs (diff-data proj)]
     (when (seq diffs)
-      (let [b-lints (mapv (partial lint-for :b) diffs)]
-        (run-with-clean-repo proj
-          (let [a-lints (mapv (partial lint-for :a) diffs)]
-            (doseq [[diff a-lint b-lint] (map vector diffs a-lints b-lints)]
-              (display-lint diff a-lint b-lint)))))
+      (let [b-lints (mapv (partial lint-for :b) diffs)
+            a-lints (run-with-clean-repo proj (mapv (partial lint-for :a) diffs))]
+        (doseq [[diff a-lint b-lint] (map vector diffs a-lints b-lints)]
+          (display-lint diff a-lint b-lint)))
       (println ""))))
 
 (some-> (first *command-line-args*)
