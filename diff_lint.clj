@@ -10,6 +10,18 @@
             [clojure.string :as str]
             [clojure.java.io :as io]))
 
+(defn clj-kondo-lint-fn [path-prefix filename]
+  (let [abs-path (.getAbsolutePath (io/file path-prefix filename))
+        config-dir (.getAbsolutePath (io/file path-prefix ".clj-kondo"))
+        lint-result (clj-kondo/run! {:lint [abs-path] :cache false :config-dir config-dir})
+        findings-by-row (->> lint-result :findings (group-by :row))]
+    (update-vals findings-by-row
+                 (fn [findings]
+                   (mapv (fn [{:keys [row col level message] :as _finding}]
+                           {:id [col message]
+                            :message (format "%s:%s:%s %s %s" abs-path row col (name level) message)})
+                         findings)))))
+
 (defn- shell-lines [args]
   (->> (apply sh args) :out str/split-lines))
 
@@ -83,23 +95,35 @@
                     (< b b-start) (recur offset (assoc! mappings b (+ offset b)) rest-b-lines (cons h hunks))
                     :else         (recur offset (assoc! mappings b (lookup b)) rest-b-lines (cons h hunks)))))))
 
-(defn extract-headers-from-unified-patch [lines]
-  (filterv #(str/starts-with? % "@@") lines))
+(defn parse-diff [proj lines]
+  (let [[old new & hunks] (->> lines (drop-while #(not (str/starts-with? % "---"))))
+        a (subs old 4)
+        b (subs new 4)]
+    {:root proj
+     :a (when-not (= a "/dev/null") (subs a 2)) ;; consume a/ 
+     :b (when-not (= b "/dev/null") (subs b 2)) ;; consume b/
+     :hunk-headers (filterv #(str/starts-with? % "@@") hunks)}))
 
-(defn clj-kondo-lint-fn [project-to-check filename]
-  (let [lint-result (clj-kondo/run! {:lint [filename]
-                                     :cache false
-                                     :config-dir (str project-to-check "/.clj-kondo")})
-        findings-by-row (->> lint-result :findings (group-by :row))]
-    (update-vals
-     findings-by-row
-     (fn [findings]
-       (mapv (fn [{:keys [filename row col level message] :as _finding}]
-               {:id [col message]
-                :message (format "%s/%s:%s:%s %s %s" project-to-check filename row col (name level) message)})
-             findings)))))
+(defn diff-data [proj]
+  (->> (git-exec proj ["diff" "--unified=0" "HEAD"])
+       (partition-by #(str/starts-with? % "diff"))
+       (partition-all 2)
+       (map (comp (partial parse-diff proj) second))))
 
-(defmacro run-with-clean-repo ^{:style/indent 1} [proj & body]
+(defn diffs-with-linting [diff-data]
+  ;; need to ensure we realize this as it occurs within a lazy seq
+  ;; otherwise the clj-kondo-lint-fn calls will be run after the repo has been cleaned
+  (->> diff-data
+       (keep (fn [{:keys [root b] :as diff-data}]
+               (when b
+                 (let [findings (clj-kondo-lint-fn root b)]
+                   (when (seq findings)
+                     (assoc diff-data :b-lint findings))))))
+       (doall)))
+
+(defmacro run-with-clean-repo
+  ^{:style/indent 1}
+  [proj & body]
   `(let [inverse-ops# (atom nil)]
      (try
        (git-exec ~proj ["commit" "--allow-empty" "-m" "TEMP"])
@@ -113,38 +137,33 @@
        (finally
          (run! (partial git-exec ~proj) @inverse-ops#)))))
 
+(defn display-lint [{:keys [a a-lint b b-lint hunk-headers] :as diff-lint-data}]
+  (println (format "\n- %s (%s)\n" b a))
+  (when (seq b-lint)
+    (let [b-lines (sort (keys b-lint))
+          b-line->a-line-data (if (seq a-lint)
+                                (let [m (linemap hunk-headers b-lines)]
+                                  #(get a-lint (get m %)))
+                                (constantly nil))]
+      (doseq [b-line b-lines]
+        (let [a-line-data (b-line->a-line-data b-line)
+              a-line-ids  (set (map :id a-line-data))
+              b-line-data (get b-lint b-line)]
+          (doseq [{:keys [message id]} b-line-data]
+            (when-not (a-line-ids id)
+              (println message))))))))
+
 (defn main [proj]
-  (let [staged (git-exec proj ["diff" "--name-only" "--cached"])
-        unstaged (git-exec proj ["diff" "--name-only"])
-        staged-and-unstaged (into (set staged) unstaged)
-        current-lint-errors (->> staged-and-unstaged
-                                 (keep (fn [file]
-                                         (let [findings (clj-kondo-lint-fn proj file)]
-                                           (when (seq findings)
-                                             [file {:findings findings
-                                                    :full-path (str proj "/" file)
-                                                    :patch-headers (-> (git-exec proj ["diff" "--unified=0" "HEAD" "--" file])
-                                                                       (extract-headers-from-unified-patch))}]))))
-                                 (into {}))]
-    (when (seq current-lint-errors)
-      (run-with-clean-repo
-       proj
-       (doseq [[path {:keys [full-path findings patch-headers]}] current-lint-errors]
-         (println "\n-" path "\n")
-         (let [old-findings (when (.exists (io/file full-path)) (clj-kondo-lint-fn proj path))]
-           (if (seq old-findings)
-             (let [lines-of-interest (sort (keys findings))
-                   new-to-old-mappings (linemap patch-headers lines-of-interest)]
-               (doseq [line lines-of-interest]
-                 (let [old-line (get new-to-old-mappings line)
-                       old-line-findings-ids (set (map :id (get old-findings old-line [])))]
-                   (doseq [{:keys [message id]} (get findings line)]
-                     (when-not (old-line-findings-ids id)
-                       (println message))))))
-             (doseq [[line-findings] (sort-by key findings)]
-               (doseq [message (map :message line-findings)]
-                 (println message)) findings))))
-       (println "")))))
+  (let [diffs (->> (diff-data proj)
+                   (diffs-with-linting))]
+    (when (seq diffs)
+      (run-with-clean-repo proj
+                           (doseq [{:keys [a] :as partial-diff-lint-data} diffs]
+                             (let [a-lint (when a (clj-kondo-lint-fn proj a))
+                                   diff-lint-data (cond-> partial-diff-lint-data
+                                                    a-lint (assoc :a-lint a-lint))]
+                               (display-lint diff-lint-data))))
+      (println ""))))
 
 (some-> (first *command-line-args*)
         (main))
