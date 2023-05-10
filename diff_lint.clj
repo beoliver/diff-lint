@@ -120,13 +120,9 @@
   [proj & body]
   `(let [inverse-ops# (atom nil)]
      (try
-       (git-exec ~proj ["commit" "--allow-empty" "-m" "TEMP"])
-       (swap! inverse-ops# conj ["reset" "--soft" "HEAD^"])
-       (when (seq (git-exec ~proj ["diff" "--name-only"]))
-         (git-exec ~proj ["stash"]) ;; "save" "--keep-index" "--include-untracked" "TEMP STASH"])
-         (swap! inverse-ops# conj ["stash" "pop"]))
-       (git-exec ~proj ["checkout" "HEAD^"])
-       (swap! inverse-ops# conj ["checkout" "-"])
+       (when (seq (git-exec ~proj ["diff-index" "HEAD"]))
+         (git-exec ~proj ["stash"])
+         (swap! inverse-ops# conj ["stash" "pop" "--index"]))
        ~@body
        (finally
          (run! (partial git-exec ~proj) @inverse-ops#)))))
@@ -158,3 +154,4 @@
 
 (some-> (first *command-line-args*)
         (main))
+
