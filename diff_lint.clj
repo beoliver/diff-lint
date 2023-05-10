@@ -118,14 +118,10 @@
 
 (defmacro run-with-clean-repo
   [proj & body]
-  `(let [inverse-ops# (atom nil)]
-     (try
-       (when (seq (git-exec ~proj ["diff-index" "HEAD"]))
-         (git-exec ~proj ["stash"])
-         (swap! inverse-ops# conj ["stash" "pop" "--index"]))
-       ~@body
-       (finally
-         (run! (partial git-exec ~proj) @inverse-ops#)))))
+  `(let [stash# (when (seq (git-exec ~proj ["diff-index" "HEAD"]))
+                  (git-exec ~proj ["stash"]))]
+     (try ~@body
+          (finally (when stash# (git-exec ~proj ["stash" "pop" "--index"]))))))
 
 (defn display-lint [{:keys [a b hunk-headers] :as diff} a-lint b-lint]
   (println (format "\n- %s %s\n" b (if (and a (not= a b)) (format "(%s)" a) "")))
@@ -146,10 +142,11 @@
 (defn main [proj]
   (let [diffs (diff-data proj)]
     (when (seq diffs)
-      (let [b-lints (mapv (partial lint-for :b) diffs)
-            a-lints (run-with-clean-repo proj (mapv (partial lint-for :a) diffs))]
-        (doseq [[diff a-lint b-lint] (map vector diffs a-lints b-lints)]
-          (display-lint diff a-lint b-lint)))
+      (let [b-lints (mapv (partial lint-for :b) diffs)]
+        (when (seq b-lints)
+          (let [a-lints (run-with-clean-repo proj (mapv (partial lint-for :a) diffs))]
+            (doseq [[diff a-lint b-lint] (map vector diffs a-lints b-lints)]
+              (display-lint diff a-lint b-lint)))))
       (println ""))))
 
 (some-> (first *command-line-args*)
