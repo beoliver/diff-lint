@@ -4,8 +4,7 @@ Only display lint errors that you have caused.
 ## What does it do?
 1. Runs `git diff` to get the files that have changed.
 2. Runs `clj-kondo` on the changed files.
-3. Creates a temporary commit for any staged changes and stashes any unstaged changes.
-4. Checks out the previous commit (ie the commit before the temporary commit)
+3. Stashes any changes.
 5. Runs `clj-kondo` on the same files (if present) as step 2.
 6. Uses the diff from step 1 to compute which linting errors are new.
 7. Restores the original state of the repository.
