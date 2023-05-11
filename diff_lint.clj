@@ -145,11 +145,14 @@
   (let [diffs (diff-data proj)]
     (timbre/info (format "Found %s diffs" (count diffs)))
     (when (seq diffs)
-      (let [b-lints (keep (partial lint-for :b) diffs)]
-        (timbre/info (format "Computed %s linting results for current state" (count b-lints)))
-        (when (seq b-lints)
-          (let [a-lints (run-with-clean-repo proj (doall (keep (partial lint-for :a) diffs)))]
-            (timbre/info (format "Computed %s linting results for previous state" (count a-lints)))
+      (let [b-lints (mapv (partial lint-for :b) diffs)
+            non-nil-b-lints (remove nil? b-lints)]
+        (timbre/info (format "Computed %d linting results for current state of which %d suggested issues"
+                             (count b-lints) (count non-nil-b-lints)))
+        (when (seq non-nil-b-lints)
+          (let [a-lints (run-with-clean-repo proj (mapv (partial lint-for :a) diffs))]
+            (timbre/info (format "Computed %d linting results for previous state of which %d suggested issues"
+                                 (count a-lints) (count (remove nil? a-lints))))
             (doseq [[diff a-lint b-lint] (map vector diffs a-lints b-lints)]
               (timbre/info (format "Computing diff lint for %s" (:b diff)))
               (display-lint diff a-lint b-lint)))))
