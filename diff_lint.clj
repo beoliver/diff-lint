@@ -8,7 +8,9 @@
   (:require [pod.borkdude.clj-kondo :as clj-kondo]
             [clojure.java.shell :refer [sh]]
             [clojure.string :as str]
-            [clojure.java.io :as io]))
+            [clojure.java.io :as io]
+            [babashka.cli :as cli]
+            [taoensso.timbre :as timbre]))
 
 (defn clj-kondo-lint-fn [path-prefix filename]
   (let [abs-path (.getAbsolutePath (io/file path-prefix filename))
@@ -139,16 +141,30 @@
             (when-not (a-line-ids id)
               (println " " message))))))))
 
-(defn main [proj]
+(defn main [proj _opts]
   (let [diffs (diff-data proj)]
+    (timbre/info (format "Found %s diffs" (count diffs)))
     (when (seq diffs)
-      (let [b-lints (mapv (partial lint-for :b) diffs)]
+      (let [b-lints (keep (partial lint-for :b) diffs)]
+        (timbre/info (format "Computed %s linting results for current state" (count b-lints)))
         (when (seq b-lints)
-          (let [a-lints (run-with-clean-repo proj (mapv (partial lint-for :a) diffs))]
+          (let [a-lints (run-with-clean-repo proj (doall (keep (partial lint-for :a) diffs)))]
+            (timbre/info (format "Computed %s linting results for previous state" (count a-lints)))
             (doseq [[diff a-lint b-lint] (map vector diffs a-lints b-lints)]
+              (timbre/info (format "Computing diff lint for %s" (:b diff)))
               (display-lint diff a-lint b-lint)))))
       (println ""))))
 
-(some-> (first *command-line-args*)
-        (main))
+(defn wrap-cli [f command-line-args]
+  (let [{:keys [args opts]}
+        (cli/parse-args command-line-args
+                        {:alias {:v :verbose :h :help}
+                         :coerce {:verbose :boolean :help :boolean}})
+        log-level (if (:verbose opts) :info :warn)]
+    (timbre/set-level! log-level)
+    (if (or (:help opts) (empty? args))
+      (println "https://github.com/beoliver/diff-lint/")
+      (apply f (conj args opts)))))
 
+(some->> *command-line-args*
+         (wrap-cli main))
