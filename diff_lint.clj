@@ -112,7 +112,7 @@
        (partition-all 2)
        (map (comp (partial parse-diff proj) second))))
 
-(defn lint-for [{:keys [root] :as diff-data} k]
+(defn lint-for [k {:keys [root] :as diff-data}]
   (when-some [path (k diff-data)]
     (let [findings (clj-kondo-lint-fn root path)]
       (when (seq findings)
